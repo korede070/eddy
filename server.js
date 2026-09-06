@@ -10,11 +10,14 @@ app.use(express.json());
 let latestQrImage = null;
 let isConnected = false;
 
-// Initialize WhatsApp client with Puppeteer flags for cloud hosting
+// Initialize WhatsApp client using LocalAuth
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({
+    dataPath: '/tmp/.wwebjs_auth'
+  }),
   puppeteer: {
     headless: true,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -28,12 +31,11 @@ const client = new Client({
   }
 });
 
-// Capture QR code and turn it into an image link
 client.on('qr', async (qr) => {
   isConnected = false;
   try {
     latestQrImage = await QRCode.toDataURL(qr);
-    console.log('New QR code generated. Visit /qr in your browser to scan.');
+    console.log('New QR code generated.');
   } catch (err) {
     console.error('Failed to generate QR image:', err);
   }
@@ -42,15 +44,26 @@ client.on('qr', async (qr) => {
 client.on('ready', () => {
   isConnected = true;
   latestQrImage = null;
-  console.log('✅ Eddy WhatsApp Server is connected and ready!');
+  console.log('✅ Eddy WhatsApp Server is connected!');
 });
 
-client.on('disconnected', () => {
+client.on('authenticated', () => {
+  console.log(' Authenticated successfully.');
+});
+
+client.on('auth_failure', (msg) => {
   isConnected = false;
-  console.log('❌ WhatsApp disconnected. Re-initializing...');
+  console.error(' Authentication failure:', msg);
 });
 
-// Route to view QR Code directly in the browser
+client.on('disconnected', (reason) => {
+  isConnected = false;
+  latestQrImage = null;
+  console.log('❌ WhatsApp disconnected:', reason);
+  client.initialize();
+});
+
+// Endpoint 1: QR Code View
 app.get('/qr', (req, res) => {
   if (isConnected) {
     return res.send(`
@@ -65,8 +78,8 @@ app.get('/qr', (req, res) => {
     return res.send(`
       <div style="text-align: center; font-family: sans-serif; padding: 50px;">
         <h1>Generating QR Code...</h1>
-        <p>Please refresh the page in a few seconds.</p>
-        <script>setTimeout(() => location.reload(), 3000);</script>
+        <p>Please wait 5 seconds and refresh the page.</p>
+        <script>setTimeout(() => location.reload(), 5000);</script>
       </div>
     `);
   }
@@ -74,9 +87,9 @@ app.get('/qr', (req, res) => {
   res.send(`
     <div style="text-align: center; font-family: sans-serif; padding: 40px;">
       <h1>Scan with WhatsApp</h1>
-      <p>Open WhatsApp on your phone > <b>Settings</b> > <b>Linked Devices</b> > <b>Link a Device</b></p>
+      <p>Open WhatsApp > <b>Settings</b> > <b>Linked Devices</b> > <b>Link a Device</b></p>
       <img src="${latestQrImage}" style="width: 300px; height: 300px; border: 4px solid #000; border-radius: 12px; margin: 20px 0;" />
-      <p><i>This page will reload automatically once connected.</i></p>
+      <p><i>Page refreshes automatically when connected.</i></p>
       <script>
         setInterval(async () => {
           const res = await fetch('/status');
@@ -88,21 +101,21 @@ app.get('/qr', (req, res) => {
   `);
 });
 
-// Status check route
+// Endpoint 2: Connection Status Check
 app.get('/status', (req, res) => {
   res.json({ connected: isConnected });
 });
 
-// Send WhatsApp Message Route
+// Endpoint 3: Send WhatsApp Message
 app.post('/send-whatsapp', async (req, res) => {
   const { number, message } = req.body;
 
   if (!number || !message) {
-    return res.status(400).json({ error: 'Number and message are required.' });
+    return res.status(400).json({ error: 'Number and message required.' });
   }
 
   if (!isConnected) {
-    return res.status(503).json({ error: 'WhatsApp client is not connected. Scan the QR code at /qr first.' });
+    return res.status(503).json({ error: 'WhatsApp client is not connected. Scan /qr first.' });
   }
 
   const cleanNumber = number.replace(/[^0-9]/g, '');
@@ -112,7 +125,7 @@ app.post('/send-whatsapp', async (req, res) => {
     await client.sendMessage(formattedNumber, message);
     res.json({ success: true, status: `Message sent to ${cleanNumber}` });
   } catch (error) {
-    console.error('WhatsApp Send Error:', error);
+    console.error('WhatsApp Error:', error);
     res.status(500).json({ error: 'Failed to send WhatsApp message.' });
   }
 });
